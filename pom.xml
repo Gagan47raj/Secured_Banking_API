@@ -125,6 +125,18 @@
     <artifactId>bucket4j-redis</artifactId>
     <version>7.6.0</version>
 </dependency>
+
+<!-- Spring Boot Actuator for monitoring -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+
+<!-- Micrometer for metrics (Prometheus support) -->
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
     </dependencies>
 
     <build>

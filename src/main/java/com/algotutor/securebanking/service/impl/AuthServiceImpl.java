@@ -25,12 +25,14 @@ import com.algotutor.securebanking.entity.Role;
 import com.algotutor.securebanking.entity.User;
 import com.algotutor.securebanking.exception.BadRequestException;
 import com.algotutor.securebanking.exception.ResourceNotFoundException;
+import com.algotutor.securebanking.metrics.BankingMetrics;
 import com.algotutor.securebanking.repository.UserRepository;
 import com.algotutor.securebanking.security.JwtUtils;
 import com.algotutor.securebanking.service.AccountService;
 import com.algotutor.securebanking.service.AuthService;
 import com.algotutor.securebanking.service.RefreshTokenService;
 
+import io.micrometer.core.instrument.Timer;
 import jakarta.transaction.Transactional;
 
 @Service
@@ -56,6 +58,9 @@ public class AuthServiceImpl implements AuthService {
 
 	@Autowired
 	private RefreshTokenService refreshTokenService;
+
+	@Autowired
+	private BankingMetrics bankingMetrics;
 
 	@Override
 	public AuthResponse registerUser(RegisterRequest registerRequest) {
@@ -105,6 +110,8 @@ public class AuthServiceImpl implements AuthService {
 
 	@Override
 	public AuthResponse authenticateUser(LoginRequest loginRequest) {
+		Timer.Sample sample = bankingMetrics.startAuthTimer();
+		bankingMetrics.incrementAuthAttempts();
 		logger.info("Authenticating user: {}", loginRequest.getUsername());
 
 		try {
@@ -125,55 +132,55 @@ public class AuthServiceImpl implements AuthService {
 
 			logger.info("User authenticated successfully: {}", user.getUsername());
 
+			bankingMetrics.incrementAuthSuccesses();
+			logger.info("User authenticated successfully: {}", user.getUsername());
+
 			return new AuthResponse(accessToken, refreshToken.getToken(), jwtUtils.getJwtExpirationMs(),
 					buildUserInfo(user));
 
 		} catch (AuthenticationException e) {
+	        bankingMetrics.incrementAuthFailures();
+
 			logger.error("Authentication failed for user: {}", loginRequest.getUsername());
 			throw new BadRequestException("Invalid username or password");
+		}
+		finally {
+	        bankingMetrics.stopAuthTimer(sample);
 		}
 	}
 
 	@Override
 	public AuthResponse refreshToken(String refreshTokenStr) {
-	    Optional<RefreshToken> refreshTokenOpt = refreshTokenService.findByToken(refreshTokenStr);
-	    
-	    if (refreshTokenOpt.isEmpty()) {
-	        throw new BadRequestException("Invalid refresh token");
-	    }
-	    
-	    RefreshToken refreshToken = refreshTokenService.verifyExpiration(refreshTokenOpt.get());
-	    
-	    User user = userRepository.findByUsername(refreshToken.getUsername())
-	        .orElseThrow(() -> new ResourceNotFoundException("User not found: " + refreshToken.getUsername()));
-	    
-	    // Generate new tokens
-	    String newAccessToken = jwtUtils.generateTokenFromUsername(
-	        refreshToken.getUsername(), 
-	        jwtUtils.getJwtExpirationMs().intValue()
-	    );
-	    
-	    RefreshToken newRefreshToken = refreshTokenService.createRefreshToken(
-	        refreshToken.getUsername(),
-	        ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest()
-	    );
-	    
-	    // Delete old refresh token
-	    refreshTokenService.deleteByToken(refreshTokenStr);
-	    
-	    return new AuthResponse(
-	        newAccessToken,
-	        newRefreshToken.getToken(),
-	        jwtUtils.getJwtExpirationMs(),
-	        buildUserInfo(user)
-	    );
+		Optional<RefreshToken> refreshTokenOpt = refreshTokenService.findByToken(refreshTokenStr);
+
+		if (refreshTokenOpt.isEmpty()) {
+			throw new BadRequestException("Invalid refresh token");
+		}
+
+		RefreshToken refreshToken = refreshTokenService.verifyExpiration(refreshTokenOpt.get());
+
+		User user = userRepository.findByUsername(refreshToken.getUsername())
+				.orElseThrow(() -> new ResourceNotFoundException("User not found: " + refreshToken.getUsername()));
+
+		// Generate new tokens
+		String newAccessToken = jwtUtils.generateTokenFromUsername(refreshToken.getUsername(),
+				jwtUtils.getJwtExpirationMs().intValue());
+
+		RefreshToken newRefreshToken = refreshTokenService.createRefreshToken(refreshToken.getUsername(),
+				((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest());
+
+		// Delete old refresh token
+		refreshTokenService.deleteByToken(refreshTokenStr);
+
+		return new AuthResponse(newAccessToken, newRefreshToken.getToken(), jwtUtils.getJwtExpirationMs(),
+				buildUserInfo(user));
 	}
 
 	@Override
 	public void logout(String username) {
-	    logger.info("User logged out: {}", username);
-	    refreshTokenService.deleteByUsername(username);
-	    SecurityContextHolder.clearContext();
+		logger.info("User logged out: {}", username);
+		refreshTokenService.deleteByUsername(username);
+		SecurityContextHolder.clearContext();
 	}
 
 	private AuthResponse.UserInfo buildUserInfo(User user) {
